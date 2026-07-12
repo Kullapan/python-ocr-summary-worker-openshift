@@ -23,6 +23,7 @@ from aiokafka import AIOKafkaConsumer
 
 from app.config import Settings, get_settings
 from app.core.database import DatabaseManager
+from app.core.oidc_service import OidcTokenService
 from app.core.s3_client import S3Client
 from app.core.kafka_producer import KafkaStatusProducer
 from app.services.docsys_service import DocsysService
@@ -216,10 +217,11 @@ async def main() -> None:
 
     # ---- infrastructure -------------------------------------------------
     db = DatabaseManager(settings)
+    oidc_service = OidcTokenService(db, settings)
     s3 = S3Client(settings)
     kafka_producer = KafkaStatusProducer(settings)
-    docsys = DocsysService(settings)
-    gpt = SecureGptService(settings)
+    docsys = DocsysService(settings, oidc_service)
+    gpt = SecureGptService(settings, oidc_service)
 
     # ---- connect / initialise -------------------------------------------
     await db.connect()

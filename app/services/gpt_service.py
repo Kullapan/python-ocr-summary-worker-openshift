@@ -9,7 +9,7 @@ server-side rate limiting (HTTP 429).
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 import structlog
@@ -22,6 +22,7 @@ from tenacity import (
 )
 
 from app.config import Settings
+from app.core.oidc_service import OidcTokenService
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
@@ -35,17 +36,27 @@ _DEFAULT_MAX_RETRIES: int = 3
 class SecureGptService:
     """Async client for the Secure GPT OCR and summarization APIs."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, oidc_service: Optional[OidcTokenService] = None) -> None:
         """Initialise the service from application settings.
 
         Args:
             settings: Application settings containing GPT connection details.
+            oidc_service: Optional service to dynamically retrieve OIDC tokens.
         """
         self._base_url: str = settings.gpt_base_url.rstrip("/")
         self._api_key: str = settings.gpt_api_key
         self._model: str = settings.gpt_model
         self._timeout: float = float(settings.gpt_timeout_seconds)
         self._max_retries: int = settings.gpt_max_retries
+        self._oidc_service = oidc_service
+
+    async def _get_gpt_token(self) -> str:
+        """Resolve GPT OIDC token or fall back to static API key."""
+        if self._oidc_service:
+            token = await self._oidc_service.get_token("gpt")
+            if token:
+                return token
+        return self._api_key
 
     # ------------------------------------------------------------------
     # Public API
@@ -195,8 +206,9 @@ class SecureGptService:
             reraise=True,
         )
         async def _do_request() -> dict[str, Any]:
+            token = await self._get_gpt_token()
             headers: dict[str, str] = {
-                "Authorization": f"Bearer {self._api_key}",
+                "Authorization": f"Bearer {token}",
             }
 
             if json_body is not None:

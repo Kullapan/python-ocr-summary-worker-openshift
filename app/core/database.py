@@ -57,6 +57,7 @@ class DatabaseManager:
 
         # Updated schema: removed s3_raw_key, s3_ocr_key, s3_report_key columns.
         # Added filename column to track the raw document filename for S3 extension parsing.
+        # Added openid_tokens table to store cached M2M tokens securely for all pods.
         ddl = """
         CREATE TABLE IF NOT EXISTS job_states (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -73,6 +74,13 @@ class DatabaseManager:
         );
         CREATE INDEX IF NOT EXISTS idx_job_states_docid ON job_states(docid);
         CREATE INDEX IF NOT EXISTS idx_job_states_state ON job_states(state);
+
+        CREATE TABLE IF NOT EXISTS openid_tokens (
+            service_name VARCHAR(50) PRIMARY KEY,
+            access_token TEXT NOT NULL,
+            expires_at TIMESTAMPTZ NOT NULL,
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
         """
 
         async with self.pool.acquire() as conn:

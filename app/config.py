@@ -67,6 +67,35 @@ class Settings(BaseSettings):
     gpt_timeout_seconds: int = 300
     gpt_max_retries: int = 3
 
+    # ── OIDC / OAuth2 M2M Authentication ───────────────────────────
+    # Global / Default OIDC Settings
+    oidc_token_url: Optional[str] = None
+    oidc_client_id: Optional[str] = None
+    oidc_client_secret: Optional[str] = None
+    oidc_scope: Optional[str] = None
+    oidc_audience: Optional[str] = None
+
+    # DOCSYS OIDC Settings
+    docsys_oidc_token_url: Optional[str] = None
+    docsys_oidc_client_id: Optional[str] = None
+    docsys_oidc_client_secret: Optional[str] = None
+    docsys_oidc_scope: Optional[str] = None
+    docsys_oidc_audience: Optional[str] = None
+
+    # DOCSYSARC OIDC Settings
+    docsysarc_oidc_token_url: Optional[str] = None
+    docsysarc_oidc_client_id: Optional[str] = None
+    docsysarc_oidc_client_secret: Optional[str] = None
+    docsysarc_oidc_scope: Optional[str] = None
+    docsysarc_oidc_audience: Optional[str] = None
+
+    # Secure GPT OIDC Settings
+    gpt_oidc_token_url: Optional[str] = None
+    gpt_oidc_client_id: Optional[str] = None
+    gpt_oidc_client_secret: Optional[str] = None
+    gpt_oidc_scope: Optional[str] = None
+    gpt_oidc_audience: Optional[str] = None
+
     # ── Logging ─────────────────────────────────────────────────────
     log_level: str = "INFO"
 

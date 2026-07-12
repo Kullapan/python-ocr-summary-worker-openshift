@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import re
 from io import BytesIO
+from typing import Optional
 
 import httpx
 import structlog
 
 from app.config import Settings
+from app.core.oidc_service import OidcTokenService
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
@@ -23,17 +25,35 @@ _DEFAULT_CONTENT_TYPE: str = "application/octet-stream"
 class DocsysService:
     """HTTP client for DOCSYS document download and DOCSYSARC archival APIs."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, oidc_service: Optional[OidcTokenService] = None) -> None:
         """Initialise the service with connection details from settings.
 
         Args:
             settings: Application settings containing base URLs and auth tokens.
+            oidc_service: Optional service to dynamically retrieve OIDC tokens.
         """
         self._docsys_base_url: str = settings.docsys_base_url.rstrip("/")
         self._docsysarc_base_url: str = settings.docsysarc_base_url.rstrip("/")
         self._docsys_token: str = settings.docsys_api_token
         self._docsysarc_token: str = settings.docsysarc_api_token
+        self._oidc_service = oidc_service
         self._timeout: float = _DEFAULT_TIMEOUT_SECONDS
+
+    async def _get_docsys_token(self) -> str:
+        """Resolve docsys OIDC token or fall back to static API token."""
+        if self._oidc_service:
+            token = await self._oidc_service.get_token("docsys")
+            if token:
+                return token
+        return self._docsys_token
+
+    async def _get_docsysarc_token(self) -> str:
+        """Resolve docsysarc OIDC token or fall back to static API token."""
+        if self._oidc_service:
+            token = await self._oidc_service.get_token("docsysarc")
+            if token:
+                return token
+        return self._docsysarc_token
 
     # ------------------------------------------------------------------
     # Public API
@@ -60,7 +80,8 @@ class DocsysService:
             f"{self._docsys_base_url}/api/v1/documents/{docid}"
             f"/files/{fileid}/download"
         )
-        headers = {"Authorization": f"Bearer {self._docsys_token}"}
+        token = await self._get_docsys_token()
+        headers = {"Authorization": f"Bearer {token}"}
 
         logger.info(
             "docsys.download.start",
@@ -124,7 +145,8 @@ class DocsysService:
             f"{self._docsysarc_base_url}/api/v1/documents/{docid}"
             f"/files/{fileid}/archive"
         )
-        headers = {"Authorization": f"Bearer {self._docsysarc_token}"}
+        token = await self._get_docsysarc_token()
+        headers = {"Authorization": f"Bearer {token}"}
 
         logger.info(
             "docsysarc.archive.start",

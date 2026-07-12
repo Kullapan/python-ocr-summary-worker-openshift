@@ -12,3 +12,10 @@ erDiagram
         timestamptz created_at "Timestamp of job creation"
         timestamptz updated_at "Timestamp of last status modification"
     }
+
+    openid_tokens {
+        varchar service_name PK "PRIMARY KEY (docsys, docsysarc, or gpt)"
+        text access_token "Cached M2M token value"
+        timestamptz expires_at "Token expiration timestamp"
+        timestamptz updated_at "Timestamp of last token refresh"
+    }

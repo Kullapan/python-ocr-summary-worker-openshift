@@ -6,6 +6,8 @@ sequenceDiagram
     participant DB as PostgreSQL (State Machine)
     participant W_Claim as Worker Claim Loop (Async Pool)
     participant P as Processor (processor.py)
+    participant OIDC as OidcTokenService
+    participant IdP as Identity Provider (OIDC)
     participant DS as DOCSYS API
     participant S3 as AWS S3 (via VPCE)
     participant GPT as Secure GPT REST API
@@ -32,7 +34,19 @@ sequenceDiagram
     P->>DB: resolve_job() -> check state & fetch filename (supports recovery)
     
     alt state < DOWNLOADED
-        P->>DS: GET /download
+        P->>OIDC: get_token('docsys')
+        alt cache hit (valid)
+            OIDC-->>P: access_token
+        else cache miss / expired
+            OIDC->>DB: Lock service row (SELECT FOR UPDATE)
+            alt token still expired (post-lock)
+                OIDC->>IdP: POST /token (M2M Client Credentials)
+                IdP-->>OIDC: Return token + expires_in
+                OIDC->>DB: UPDATE openid_tokens
+            end
+            OIDC-->>P: access_token
+        end
+        P->>DS: GET /download (with bearer token)
         DS-->>P: File bytes, Content-Type, Filename
         P->>DB: UPDATE job_states SET state='DOWNLOADED', filename=filename
     end
@@ -44,7 +58,9 @@ sequenceDiagram
     end
 
     alt state < OCR_COMPLETED
-        P->>GPT: POST /api/v1/ocr (document data)
+        P->>OIDC: get_token('gpt')
+        OIDC-->>P: access_token
+        P->>GPT: POST /api/v1/ocr (with bearer token)
         GPT-->>P: OCR text (JSON)
         P->>S3: upload_bytes("jobs/{job_id}/ocr.txt")
         P->>DB: UPDATE job_states SET state='OCR_COMPLETED'
@@ -52,7 +68,9 @@ sequenceDiagram
 
     alt state < SUMMARY_COMPLETED
         P->>S3: download_bytes("jobs/{job_id}/ocr.txt")
-        P->>GPT: POST /api/v1/chat/completions (OCR text)
+        P->>OIDC: get_token('gpt')
+        OIDC-->>P: access_token
+        P->>GPT: POST /api/v1/chat/completions (with bearer token)
         GPT-->>P: Summary report text (JSON)
         P->>S3: upload_bytes("jobs/{job_id}/report.txt")
         P->>DB: UPDATE job_states SET state='SUMMARY_COMPLETED'
@@ -60,7 +78,9 @@ sequenceDiagram
 
     alt state < ARCHIVED
         P->>S3: download_bytes("jobs/{job_id}/report.txt")
-        P->>DA: POST /archive (multipart upload)
+        P->>OIDC: get_token('docsysarc')
+        OIDC-->>P: access_token
+        P->>DA: POST /archive (with bearer token)
         P->>DB: UPDATE job_states SET state='ARCHIVED'
     end
 

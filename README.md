@@ -48,6 +48,7 @@ python-ocr-summary-worker-openshift/
 │   └── core/
 │       ├── __init__.py
 │       ├── database.py            # asyncpg pool + state machine DB helper
+│       ├── oidc_service.py        # OIDC M2M token fetcher & cache manager
 │       ├── s3_client.py           # S3 client via VPC Endpoint (boto3)
 │       └── kafka_producer.py      # aiokafka output producer
 ├── docs/
@@ -67,6 +68,7 @@ python-ocr-summary-worker-openshift/
 ├── requirements.txt               # Pinned dependencies
 ├── .env.example                   # Environment configuration template
 ├── .gitignore                     # Git ignore rules for Python, IDEs, and local envs
+├── AGENTS.md                      # AI agent guidelines, design constraints, and rules
 └── README.md                      # This file
 ```
 
@@ -101,7 +103,7 @@ The worker communicates with three main HTTP endpoints. Their specifications are
 * **Method**: `GET`
 * **URL**: `{DOCSYS_BASE_URL}/api/v1/documents/{docid}/files/{fileid}/download`
 * **Headers**:
-  * `Authorization: Bearer {DOCSYS_API_TOKEN}`
+  * `Authorization: Bearer {DOCSYS_API_TOKEN}` (or dynamically resolved OIDC token)
 * **Behavior**: Streamed chunk-by-chunk using `httpx.AsyncClient` to prevent buffering files into memory. Extracts content type from `Content-Type` and filename from `Content-Disposition`.
 
 ### 2. Secure GPT OCR API
@@ -109,7 +111,7 @@ The worker communicates with three main HTTP endpoints. Their specifications are
 * **Method**: `POST`
 * **URL**: `{GPT_BASE_URL}/api/v1/ocr`
 * **Headers**:
-  * `Authorization: Bearer {GPT_API_KEY}`
+  * `Authorization: Bearer {GPT_API_KEY}` (or dynamically resolved OIDC token)
   * `Content-Type: multipart/form-data`
 * **Request Payload**:
   * `file`: Multipart file binary data
@@ -127,7 +129,7 @@ The worker communicates with three main HTTP endpoints. Their specifications are
 * **Method**: `POST`
 * **URL**: `{GPT_BASE_URL}/api/v1/chat/completions`
 * **Headers**:
-  * `Authorization: Bearer {GPT_API_KEY}`
+  * `Authorization: Bearer {GPT_API_KEY}` (or dynamically resolved OIDC token)
   * `Content-Type: application/json`
 * **Request Payload** (JSON):
   ```json
@@ -163,7 +165,7 @@ The worker communicates with three main HTTP endpoints. Their specifications are
 * **Method**: `POST`
 * **URL**: `{DOCSYSARC_BASE_URL}/api/v1/documents/{docid}/files/{fileid}/archive`
 * **Headers**:
-  * `Authorization: Bearer {DOCSYSARC_API_TOKEN}`
+  * `Authorization: Bearer {DOCSYSARC_API_TOKEN}` (or dynamically resolved OIDC token)
   * `Content-Type: multipart/form-data`
 * **Request Payload**:
   * `file`: Multipart binary document (e.g. filename `{docid}_{fileid}_report.txt`, MIME type `application/pdf`)
@@ -198,14 +200,34 @@ The worker communicates with three main HTTP endpoints. Their specifications are
 | `S3_ACCESS_KEY_ID` | *(unset)* | Leave unset for IAM role / IRSA |
 | `S3_SECRET_ACCESS_KEY` | *(unset)* | Leave unset for IAM role / IRSA |
 | `DOCSYS_BASE_URL` | — | DOCSYS API base URL |
-| `DOCSYS_API_TOKEN` | — | DOCSYS bearer token |
+| `DOCSYS_API_TOKEN` | — | DOCSYS bearer token (fallback if OIDC is not configured) |
 | `DOCSYSARC_BASE_URL` | — | DOCSYSARC archive API base URL |
-| `DOCSYSARC_API_TOKEN` | — | DOCSYSARC bearer token |
+| `DOCSYSARC_API_TOKEN` | — | DOCSYSARC bearer token (fallback if OIDC is not configured) |
 | `GPT_BASE_URL` | — | Secure GPT API endpoint |
-| `GPT_API_KEY` | — | Secure GPT API key |
+| `GPT_API_KEY` | — | Secure GPT API key (fallback if OIDC is not configured) |
 | `GPT_MODEL` | `gpt-4o` | Model name for OCR and summarization |
 | `GPT_TIMEOUT_SECONDS` | `300` | Request timeout for GPT calls |
 | `GPT_MAX_RETRIES` | `3` | Retry attempts for transient GPT failures |
+| `OIDC_TOKEN_URL` | — | Global fallback OIDC token endpoint URL |
+| `OIDC_CLIENT_ID` | — | Global fallback OIDC client ID |
+| `OIDC_CLIENT_SECRET` | — | Global fallback OIDC client secret |
+| `OIDC_SCOPE` | `openid` | Global fallback OIDC scope |
+| `OIDC_AUDIENCE` | — | Global fallback OIDC audience |
+| `DOCSYS_OIDC_TOKEN_URL` | — | DOCSYS specific OIDC token endpoint URL |
+| `DOCSYS_OIDC_CLIENT_ID` | — | DOCSYS specific OIDC client ID |
+| `DOCSYS_OIDC_CLIENT_SECRET` | — | DOCSYS specific OIDC client secret |
+| `DOCSYS_OIDC_SCOPE` | — | DOCSYS specific OIDC scope |
+| `DOCSYS_OIDC_AUDIENCE` | — | DOCSYS specific OIDC audience |
+| `DOCSYSARC_OIDC_TOKEN_URL` | — | DOCSYSARC specific OIDC token endpoint URL |
+| `DOCSYSARC_OIDC_CLIENT_ID` | — | DOCSYSARC specific OIDC client ID |
+| `DOCSYSARC_OIDC_CLIENT_SECRET` | — | DOCSYSARC specific OIDC client secret |
+| `DOCSYSARC_OIDC_SCOPE` | — | DOCSYSARC specific OIDC scope |
+| `DOCSYSARC_OIDC_AUDIENCE` | — | DOCSYSARC specific OIDC audience |
+| `GPT_OIDC_TOKEN_URL` | — | Secure GPT specific OIDC token endpoint URL |
+| `GPT_OIDC_CLIENT_ID` | — | Secure GPT specific OIDC client ID |
+| `GPT_OIDC_CLIENT_SECRET` | — | Secure GPT specific OIDC client secret |
+| `GPT_OIDC_SCOPE` | — | Secure GPT specific OIDC scope |
+| `GPT_OIDC_AUDIENCE` | — | Secure GPT specific OIDC audience |
 | `LOG_LEVEL` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 
 ---
@@ -351,5 +373,6 @@ python -m app
 | **Memory** | Stream files via `httpx` streaming + `boto3 upload_fileobj` + chunked reads. Never hold full document in memory. |
 | **Retries** | `tenacity` on GPT calls only (external, flaky). DOCSYS/S3 failures fail the job immediately. |
 | **State machine** | PostgreSQL row per job with state enum. On recovery, processor reads current state and resumes from the last incomplete step. |
+| **M2M OIDC Token Caching** | PostgreSQL-backed cache table (`openid_tokens`) with row-level locks (`SELECT FOR UPDATE`) to coordinate token refreshes across scaled pod replicas and avoid hitting OIDC rate limits. |
 | **S3 VPC Endpoint** | `boto3.client('s3', endpoint_url=...)` — standard pattern for private endpoints. |
 | **OpenShift** | Non-root UID 1001, no privilege escalation, read-only FS compatible (temp files use `/tmp`). |
