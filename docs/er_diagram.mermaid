@@ -1,6 +1,6 @@
 erDiagram
     job_states {
-        uuid id PK "PRIMARY KEY, auto-generated"
+        varchar id PK "PRIMARY KEY, client-provided correlation ID"
         varchar docid "Document ID in DOCSYS (Indexed)"
         varchar fileid "File ID within the document"
         varchar state "Current pipeline step/state (Indexed)"
