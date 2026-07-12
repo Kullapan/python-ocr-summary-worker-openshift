@@ -375,4 +375,4 @@ python -m app
 | **State machine** | PostgreSQL row per job with state enum. On recovery, processor reads current state and resumes from the last incomplete step. |
 | **M2M OIDC Token Caching** | PostgreSQL-backed cache table (`openid_tokens`) with row-level locks (`SELECT FOR UPDATE`) to coordinate token refreshes across scaled pod replicas and avoid hitting OIDC rate limits. |
 | **S3 VPC Endpoint** | `boto3.client('s3', endpoint_url=...)` — standard pattern for private endpoints. |
-| **OpenShift** | Non-root UID 1001, no privilege escalation, read-only FS compatible (temp files use `/tmp`). |
+| **OpenShift** | Non-root UID 1001, no privilege escalation, read-only FS compatible (runs entirely in-memory). |

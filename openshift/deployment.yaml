@@ -27,7 +27,7 @@ spec:
             capabilities:
               drop:
                 - ALL
-            readOnlyRootFilesystem: false  # Must write to /tmp/ocr-worker
+            readOnlyRootFilesystem: true
             runAsUser: 1001
           envFrom:
             - configMapRef:

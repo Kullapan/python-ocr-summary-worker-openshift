@@ -20,8 +20,8 @@ COPY --from=builder /install /usr/local
 # Copy application code
 COPY app/ ./app/
 
-# Create tmp directory for streaming operations
-RUN mkdir -p /tmp/ocr-worker && chown -R appuser:appgroup /app /tmp/ocr-worker
+# Set ownership of the application directory to the non-root user
+RUN chown -R appuser:appgroup /app
 
 # Switch to non-root user
 USER 1001

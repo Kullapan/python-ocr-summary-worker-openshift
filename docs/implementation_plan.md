@@ -142,7 +142,7 @@ python-ocr-summary-worker-openshift/
 | **Retries** | `tenacity` on GPT calls only (external, flaky). DOCSYS/S3 failures fail the job immediately (infrastructure issues). |
 | **State machine** | PostgreSQL row per job with state enum. On recovery, `processor` reads current state and resumes from the last incomplete step. |
 | **S3 VPC Endpoint** | `boto3.client('s3', endpoint_url=settings.s3_endpoint_url)` — standard pattern for private endpoints. |
-| **OpenShift** | Non-root UID 1001, no privilege escalation, read-only FS compatible (temp files use `/tmp`). |
+| **OpenShift** | Non-root UID 1001, no privilege escalation, read-only FS compatible (runs entirely in-memory). |
 
 ## State Machine Transitions
 

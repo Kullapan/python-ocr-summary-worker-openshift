@@ -57,7 +57,7 @@ Unlike traditional sequential Kafka consumers, this pipeline decouples message i
 * **OpenShift Security Constraints**: The application runs under strict SCC (Security Context Constraints) on OpenShift:
   * Running as non-root user `1001` (configured in `Dockerfile` and `openshift/deployment.yaml`).
   * Drops all Linux capabilities.
-  * Root filesystem is read-only (except `/tmp/ocr-worker` which is mounted/allocated for scratch file streaming).
+  * Root filesystem is read-only (the application operates entirely in-memory and does not write to local storage).
 
 ---
 
