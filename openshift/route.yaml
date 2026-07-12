@@ -1,0 +1,14 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: ocr-summary-worker-route
+  labels:
+    app: ocr-summary-worker
+spec:
+  to:
+    kind: Service
+    name: ocr-summary-worker-service
+    weight: 100
+  port:
+    targetPort: metrics
+  wildcardPolicy: None

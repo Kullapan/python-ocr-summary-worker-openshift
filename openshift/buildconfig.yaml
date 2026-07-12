@@ -1,0 +1,25 @@
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: ocr-summary-worker-build
+  labels:
+    app: ocr-summary-worker
+spec:
+  runPolicy: Serial
+  source:
+    type: Git
+    git:
+      uri: https://github.com/your-org/python-ocr-summary-worker-openshift.git
+      ref: main
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+  output:
+    to:
+      kind: ImageStreamTag
+      name: ocr-summary-worker:latest
+  triggers:
+    - type: ConfigChange
+    - type: ImageChange
+      imageChange: {}

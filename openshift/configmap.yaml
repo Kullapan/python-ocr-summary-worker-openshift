@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ocr-worker-config
+  labels:
+    app: ocr-summary-worker
+data:
+  KAFKA_BOOTSTRAP_SERVERS: "kafka-bootstrap:9092"
+  KAFKA_INPUT_TOPIC: "doc-processing-requests"
+  KAFKA_OUTPUT_TOPIC: "doc-processing-results"
+  KAFKA_GROUP_ID: "ocr-summary-worker"
+  KAFKA_SECURITY_PROTOCOL: "PLAINTEXT"
+  S3_BUCKET_NAME: "ocr-documents"
+  S3_REGION_NAME: "ap-southeast-1"
+  GPT_MODEL: "gpt-4o"
+  GPT_TIMEOUT_SECONDS: "300"
+  GPT_MAX_RETRIES: "3"
+  DB_POOL_MIN_SIZE: "2"
+  DB_POOL_MAX_SIZE: "10"
+  WORKER_CONCURRENCY: "5"
+  LOG_LEVEL: "INFO"

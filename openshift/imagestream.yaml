@@ -1,0 +1,9 @@
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: ocr-summary-worker
+  labels:
+    app: ocr-summary-worker
+spec:
+  lookupPolicy:
+    local: true

@@ -1,0 +1,14 @@
+erDiagram
+    job_states {
+        uuid id PK "PRIMARY KEY, auto-generated"
+        varchar docid "Document ID in DOCSYS (Indexed)"
+        varchar fileid "File ID within the document"
+        varchar state "Current pipeline step/state (Indexed)"
+        varchar filename "Original document filename (Nullable)"
+        text error_message "Error description if state failed (Nullable)"
+        varchar worker_id "Hostname of claiming pod (Nullable)"
+        timestamptz locked_at "Timestamp of claim lock (Nullable)"
+        timestamptz leased_until "Lease expiration timestamp (Nullable)"
+        timestamptz created_at "Timestamp of job creation"
+        timestamptz updated_at "Timestamp of last status modification"
+    }

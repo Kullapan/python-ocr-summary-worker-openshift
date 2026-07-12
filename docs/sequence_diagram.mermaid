@@ -1,0 +1,74 @@
+sequenceDiagram
+    autonumber
+    actor Client as Client Application
+    participant K_IN as Kafka Input Topic (Requests)
+    participant W_Cons as Worker Consumer Loop
+    participant DB as PostgreSQL (State Machine)
+    participant W_Claim as Worker Claim Loop (Async Pool)
+    participant P as Processor (processor.py)
+    participant DS as DOCSYS API
+    participant S3 as AWS S3 (via VPCE)
+    participant GPT as Secure GPT REST API
+    participant DA as DOCSYSARC API
+    participant K_OUT as Kafka Output Topic (Results)
+
+    %% Phase 1: Ingress Dispatching
+    Client->>K_IN: Publish Request message (docid, fileid)
+    K_IN->>W_Cons: Consume message (docid, fileid)
+    W_Cons->>DB: Check if job exists (get_job_by_document)
+    alt Job does not exist
+        W_Cons->>DB: INSERT INTO job_states (docid, fileid, state='RECEIVED')
+    end
+    W_Cons->>K_IN: Commit Kafka offset immediately (prevents lag/timeout)
+
+    %% Phase 2: Asynchronous Distributed Claiming
+    loop Periodic Polling (with Concurrency Semaphore)
+        W_Claim->>DB: claim_job(worker_id) [UPDATE ... FOR UPDATE SKIP LOCKED]
+        DB-->>W_Claim: Return claimed job details (id, docid, fileid)
+    end
+
+    %% Phase 3: Pipeline Execution
+    W_Claim->>P: process(docid, fileid)
+    P->>DB: resolve_job() -> check state & fetch filename (supports recovery)
+    
+    alt state < DOWNLOADED
+        P->>DS: GET /download
+        DS-->>P: File bytes, Content-Type, Filename
+        P->>DB: UPDATE job_states SET state='DOWNLOADED', filename=filename
+    end
+
+    alt state < UPLOADED_S3
+        note over P: raw key extension built from DB filename
+        P->>S3: upload_bytes("jobs/{job_id}/raw.{ext}")
+        P->>DB: UPDATE job_states SET state='UPLOADED_S3'
+    end
+
+    alt state < OCR_COMPLETED
+        P->>GPT: POST /api/v1/ocr (document data)
+        GPT-->>P: OCR text (JSON)
+        P->>S3: upload_bytes("jobs/{job_id}/ocr.txt")
+        P->>DB: UPDATE job_states SET state='OCR_COMPLETED'
+    end
+
+    alt state < SUMMARY_COMPLETED
+        P->>S3: download_bytes("jobs/{job_id}/ocr.txt")
+        P->>GPT: POST /api/v1/chat/completions (OCR text)
+        GPT-->>P: Summary report text (JSON)
+        P->>S3: upload_bytes("jobs/{job_id}/report.txt")
+        P->>DB: UPDATE job_states SET state='SUMMARY_COMPLETED'
+    end
+
+    alt state < ARCHIVED
+        P->>S3: download_bytes("jobs/{job_id}/report.txt")
+        P->>DA: POST /archive (multipart upload)
+        P->>DB: UPDATE job_states SET state='ARCHIVED'
+    end
+
+    alt state < SUCCESS (Publishing)
+        P->>K_OUT: publish_status(SUCCESS payload)
+        P->>DB: UPDATE job_states SET state='SUCCESS', worker_id=NULL, locked_at=NULL, leased_until=NULL
+    end
+
+    %% Error Handling Path
+    note over P: If any step fails during processing
+    P->>DB: UPDATE job_states SET state=last_good_state, error_message=..., worker_id=NULL, locked_at=NULL, leased_until=NULL
