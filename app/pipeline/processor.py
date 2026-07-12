@@ -12,6 +12,7 @@ import time
 from typing import Any
 
 import structlog
+import structlog.contextvars
 
 from app.config import Settings
 from app.core.database import DatabaseManager
@@ -90,23 +91,26 @@ class DocumentProcessor:
     # Public entry point
     # ------------------------------------------------------------------
 
-    async def process(self, docid: str, fileid: str) -> dict[str, Any]:
+    async def process(self, job_id: str, docid: str, fileid: str) -> dict[str, Any]:
         """Run (or resume) the pipeline for a single document.
 
         Args:
+            job_id: Client-provided unique correlation/job ID.
             docid: Document identifier in DOCSYS.
             fileid: File identifier within the document.
 
         Returns:
             A dict with ``job_id``, ``status``, and processing metadata.
         """
-        log = logger.bind(docid=docid, fileid=fileid)
+        # Clear context variables and bind job_id/docid/fileid globally for distributed tracing
+        structlog.contextvars.clear_contextvars()
+        structlog.contextvars.bind_contextvars(job_id=job_id, docid=docid, fileid=fileid)
+
+        log = logger.bind(docid=docid, fileid=fileid, job_id=job_id)
         start_ts = time.monotonic()
 
         # ---- recover or create job ------------------------------------
-        job_id, current_state = await self._resolve_job(docid, fileid, log)
-
-        log = log.bind(job_id=job_id)
+        job_id, current_state = await self._resolve_job(job_id, docid, fileid, log)
         resume_idx = _state_index(current_state)
 
         log.info(
@@ -194,6 +198,7 @@ class DocumentProcessor:
 
     async def _resolve_job(
         self,
+        job_id: str,
         docid: str,
         fileid: str,
         log: structlog.stdlib.BoundLogger,
@@ -210,14 +215,13 @@ class DocumentProcessor:
         Returns:
             ``(job_id, current_state)``
         """
-        existing = await self._db.get_job_by_document(docid, fileid)
+        existing = await self._db.get_job(job_id)
 
         if existing is None:
-            job_id = await self._db.create_job(docid, fileid)
+            await self._db.create_job(job_id, docid, fileid)
             log.info("job.created", job_id=job_id, state=JobState.RECEIVED)
             return job_id, JobState.RECEIVED
 
-        job_id = str(existing["id"])
         state: str = existing["state"]
 
         if existing.get("error_message") is not None:

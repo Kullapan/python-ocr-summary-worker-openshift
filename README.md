@@ -26,6 +26,7 @@ graph LR
 For more detailed diagrams, refer to the documentation:
 * [Sequence Diagram](docs/sequence_diagram.mermaid)
 * [Entity-Relationship (ER) Diagram](docs/er_diagram.mermaid)
+* [Local Docker Compose Design](docs/docker_compose_design.md)
 
 ---
 
@@ -55,7 +56,13 @@ python-ocr-summary-worker-openshift/
 │   ├── implementation_plan.md     # Baseline implementation specification
 │   ├── sequence_diagram.mermaid   # Mermaid-formatted sequential flow
 │   ├── er_diagram.mermaid         # Mermaid-formatted state machine schema
-│   └── decoupled_worker_design.md # Multi-pod scaling architectural design document
+│   ├── decoupled_worker_design.md # Multi-pod scaling architectural design document
+│   └── docker_compose_design.md   # Local development compose and mock design document
+├── mocks/                         # FastAPI mock APIs for offline local testing
+│   ├── docsys/                    # Mock download service
+│   ├── docsysarc/                 # Mock archival service
+│   ├── gpt/                       # Mock OCR & summary service
+│   └── oidc/                      # Mock M2M authentication provider
 ├── openshift/
 │   ├── buildconfig.yaml           # OpenShift build pipeline configuration
 │   ├── imagestream.yaml           # Local container image tracking catalog
@@ -76,21 +83,21 @@ python-ocr-summary-worker-openshift/
 
 ## Suggested S3 Object Layout
 
-To ensure clean isolation, auditing, and scalability, the object storage is organized systematically by `job_id` (UUID format). The suggested S3 folder layout structure in the bucket is:
+To ensure clean isolation, auditing, and scalability, the object storage is organized systematically by the client-provided `job_id` (any string format). The S3 folder layout structure in the bucket is:
 
 ```
 s3://<S3_BUCKET_NAME>/
   └── jobs/
-      └── <job_uuid>/
+      └── <job_id>/
           ├── raw.<ext>           # Original file uploaded during Step 3
           ├── ocr.txt             # Raw plain text output from Step 4 (GPT OCR)
           └── report.txt          # Final summarized report text from Step 5 (GPT Summary)
 ```
 
 ### Layout Properties
-* **UUID Partitioning**: Nesting objects under the job's unique UUID (`jobs/<job_uuid>/...`) avoids object name collisions and partition hotspots in S3.
+* **Tenant Isolation Partitioning**: Nesting objects under the job's unique client-generated correlation ID (`jobs/<job_id>/...`) avoids object name collisions, partition hotspots in S3, and guarantees transaction isolation.
 * **Format Preservation**: The raw document retains its original extension (`.pdf`, `.docx`, `.png`, etc.), while text artifacts are saved as `.txt`.
-* **Deterministic S3 Keys**: S3 keys are constructed dynamically using the `job_id` (e.g. `jobs/{job_id}/ocr.txt`). The database only stores the original `filename` (in the `filename` column) to identify the file extension for the raw S3 object.
+* **Deterministic S3 Keys**: S3 keys are constructed dynamically using the client-provided `job_id` (e.g. `jobs/{job_id}/ocr.txt`). The database only stores the original `filename` (in the `filename` column) to identify the file extension for the raw S3 object.
 
 ---
 
@@ -238,7 +245,7 @@ The worker processes each document through a **7-step sequential pipeline**:
 
 | Step | Action | State After |
 |---:|---|---|
-| 1 | **Consume** Kafka message (`docid`, `fileid`) | `RECEIVED` |
+| 1 | **Consume** Kafka message (`job_id`, `docid`, `fileid`) | `RECEIVED` |
 | 2 | **Download** document from DOCSYS API (streamed) | `DOWNLOADED` |
 | 3 | **Upload** raw file to S3 via VPC Endpoint | `UPLOADED_S3` |
 | 4 | **OCR** — send document to Secure GPT, save text to S3 | `OCR_COMPLETED` |
@@ -246,9 +253,9 @@ The worker processes each document through a **7-step sequential pipeline**:
 | 6 | **Archive** — upload report to DOCSYSARC | `ARCHIVED` |
 | 7 | **Publish** completion status to Kafka output topic | `SUCCESS` |
 
-Each step updates the PostgreSQL state machine. If any step fails, the state is set to `FAILED` and worker lock columns are cleared to release the claim. 
+Each step updates the PostgreSQL state machine. If any step fails, the worker lock columns are cleared to release the claim. 
 
-Instead of executing jobs synchronously inside the main Kafka loop, the consumer immediately logs the job as `RECEIVED` and commits the offset. A background worker pool on each pod replica polls PostgreSQL and claims pending or failed tasks utilizing an atomic `FOR UPDATE SKIP LOCKED` query (to prevent concurrent duplicate execution across scaled pods). Claims are protected by a 15-minute lease; if a pod crashes, the lease expires, allowing other pods to automatically reclaim and resume the pipeline from the last known database state (idempotent recovery).
+Instead of executing jobs synchronously inside the main Kafka loop, the consumer validates the incoming message against the Pydantic schema, registers the client-provided `job_id` as the primary key in PostgreSQL (`state = 'RECEIVED'`), and immediately commits the offset. A background worker pool on each pod replica polls PostgreSQL and claims pending or failed tasks utilizing an atomic `FOR UPDATE SKIP LOCKED` query (to prevent concurrent duplicate execution across scaled pods). Claims are protected by a 15-minute lease; if a pod crashes, the lease expires, allowing other pods to automatically reclaim and resume the pipeline from the last known database state (idempotent recovery).
 
 ---
 
@@ -342,6 +349,18 @@ graph TD
 
 ## Development Setup
 
+### Local Docker Compose Environment (Recommended)
+
+To run the worker offline with fully containerized mocks of all dependencies (PostgreSQL, Kafka, MinIO, OIDC, DOCSYS, GPT, DOCSYSARC, Kafdrop, and Adminer), run:
+
+```bash
+# Start all services, mocks, dashboards, and the worker
+docker compose --env-file .env.compose up --build
+```
+
+Refer to the [Local Docker Compose Design Document](docs/docker_compose_design.md) for verification commands, accessing the web dashboards (Kafdrop, Adminer, MinIO console), and swapping mocks with real staging services.
+
+### Manual Local Run
 ```bash
 # Clone the repository
 git clone <repo-url>
@@ -362,6 +381,65 @@ cp .env.example .env
 # Run the worker
 python -m app
 ```
+
+---
+
+## Local Mock Service Testing
+
+To verify the end-to-end event-driven pipeline locally, you can execute a full offline simulation utilizing the containerized mock services.
+
+### Step 1: Start the Docker Compose Environment
+Bring up the database, broker, object storage, API mock instances, and the worker container:
+```bash
+docker compose --env-file .env.compose up --build
+```
+
+### Step 2: Trigger a Test Document Job
+Once the services are active, run the following command in a new terminal to publish a JSON test request containing the client-generated `job_id` correlation ID to the Kafka ingress topic (`doc-processing-requests`):
+```bash
+docker exec -i ocr-kafka kafka-console-producer --bootstrap-server localhost:9092 --topic doc-processing-requests <<< '{"job_id": "client-custom-corr-100abc", "docid": "test-doc-123", "fileid": "test-file-456"}'
+```
+
+### Step 3: Monitor Execution Logs
+You can view the sequential state machine changes (e.g. `RECEIVED`, `DOWNLOADED`, `UPLOADED_S3`, `OCR_COMPLETED`, `SUMMARY_COMPLETED`, `ARCHIVED`, `SUCCESS`) directly in your terminal console logs. To view only the worker logs, execute:
+```bash
+docker compose logs worker
+```
+
+### Step 4: Verify Completion Events
+Consume from the Kafka output results topic (`doc-processing-results`) to assert that the worker successfully published the completion status:
+```bash
+docker exec -it ocr-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic doc-processing-results --from-beginning --max-messages 1
+```
+
+---
+
+### Visual Auditing via Web UIs
+
+To visually audit and verify data transformations, open the following local web dashboards in your browser:
+
+#### 1. Kafdrop (Kafka Web UI) — [http://localhost:8085](http://localhost:8085)
+* **Verify Topics**: Browse topic configurations, view active consumer groups (`ocr-summary-worker`), and check consumer lag.
+* **Browse Messages**: Select a topic (e.g. `doc-processing-requests`), click **"View Messages"** in the top-right corner, choose partition `0`, and click **"View Messages"** to inspect payload structures.
+
+#### 2. Adminer (PostgreSQL Database UI) — [http://localhost:8086](http://localhost:8086)
+* **Login Credentials**:
+  - **System**: `PostgreSQL`
+  - **Server**: `postgres`
+  - **Username**: `ocruser`
+  - **Password**: `ocrpass`
+  - **Database**: `ocrdb`
+* **Audit States**: Click the **`job_states`** table in the sidebar and choose **"Select data"** to view all persistent job records, error stacktraces, and pod lease parameters.
+* **Audit Tokens**: Click the **`openid_tokens`** table to view cached M2M access tokens for DOCSYS and GPT.
+
+#### 3. MinIO Console (S3 Browser UI) — [http://localhost:9001](http://localhost:9001)
+* **Login Credentials**:
+  - **Username**: `minioadmin`
+  - **Password**: `minioadmin`
+* **Browse Storage Artifacts**: Open **"Object Browser"** in the left sidebar, click the **`ocr-documents`** bucket, and navigate through the `jobs/<job_uuid>/` folder:
+  - `raw.txt` (or original extension): The document downloaded from docsys.
+  - `ocr.txt`: The text extracted from the document by the mock GPT OCR API.
+  - `report.txt`: The summary report text generated by the mock GPT completions API.
 
 ---
 

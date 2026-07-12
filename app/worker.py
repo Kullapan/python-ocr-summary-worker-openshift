@@ -29,10 +29,20 @@ from app.core.kafka_producer import KafkaStatusProducer
 from app.services.docsys_service import DocsysService
 from app.services.gpt_service import SecureGptService
 from app.pipeline.processor import DocumentProcessor
+from app.schemas import JobStartMessage
+import structlog.contextvars
 
 # ---------------------------------------------------------------------------
 # Structured logging — configure once at module level
 # ---------------------------------------------------------------------------
+def prepend_job_id(logger: Any, method_name: str, event_dict: dict[str, Any]) -> dict[str, Any]:
+    """Prepend the current job_id to the event message for distributed tracing."""
+    job_id = event_dict.get("job_id")
+    if job_id:
+        event_dict["event"] = f"[{job_id}] {event_dict['event']}"
+    return event_dict
+
+
 structlog.configure(
     processors=[
         structlog.contextvars.merge_contextvars,
@@ -40,6 +50,7 @@ structlog.configure(
         structlog.processors.StackInfoRenderer(),
         structlog.dev.set_exc_info,
         structlog.processors.TimeStamper(fmt="iso"),
+        prepend_job_id,
         structlog.processors.JSONRenderer(),
     ],
     wrapper_class=structlog.stdlib.BoundLogger,
@@ -98,9 +109,23 @@ async def kafka_consumer_loop(
                 break
 
             value: dict[str, Any] = msg.value
-            docid: str = value.get("docid", "")
-            fileid: str = value.get("fileid", "")
+            try:
+                start_msg = JobStartMessage.model_validate(value)
+            except Exception as err:
+                log.warning("worker.invalid_message", raw_value=value, error=str(err))
+                await consumer.commit()
+                continue
+
+            job_id = start_msg.job_id
+            docid = start_msg.docid
+            fileid = start_msg.fileid
+
+            # Clear previous contextvars and bind current job identifier contexts
+            structlog.contextvars.clear_contextvars()
+            structlog.contextvars.bind_contextvars(job_id=job_id, docid=docid, fileid=fileid)
+
             msg_log = log.bind(
+                job_id=job_id,
                 docid=docid,
                 fileid=fileid,
                 topic=msg.topic,
@@ -108,22 +133,16 @@ async def kafka_consumer_loop(
                 offset=msg.offset,
             )
 
-            if not docid or not fileid:
-                msg_log.warning("worker.invalid_message", raw_value=value)
-                await consumer.commit()
-                continue
-
             msg_log.info("worker.message_received")
 
-            # Register/retrieve the job state in PostgreSQL
-            existing = await db.get_job_by_document(docid, fileid)
+            # Register/retrieve the job state in PostgreSQL using client job_id
+            existing = await db.get_job(job_id)
             if existing is None:
-                job_id = await db.create_job(docid, fileid)
-                msg_log.info("worker.job_registered", job_id=job_id)
+                await db.create_job(job_id, docid, fileid)
+                msg_log.info("worker.job_registered")
             else:
                 msg_log.info(
                     "worker.job_already_exists",
-                    job_id=str(existing["id"]),
                     state=existing["state"],
                 )
 
@@ -160,11 +179,16 @@ async def claim_loop(
         job_id = str(job["id"])
         docid = job["docid"]
         fileid = job["fileid"]
+
+        # Bind contextvars in current claimant task
+        structlog.contextvars.clear_contextvars()
+        structlog.contextvars.bind_contextvars(job_id=job_id, docid=docid, fileid=fileid)
+
         job_log = log.bind(job_id=job_id, docid=docid, fileid=fileid)
 
         async with semaphore:
             try:
-                await processor.process(docid, fileid)
+                await processor.process(job_id, docid, fileid)
                 job_log.info("worker.job_execution_completed")
             except Exception:
                 job_log.exception("worker.job_execution_failed")

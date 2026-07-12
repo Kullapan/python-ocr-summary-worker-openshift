@@ -40,10 +40,21 @@ python-ocr-summary-worker-openshift/
 │       ├── s3_client.py           # S3 via VPC Endpoint — boto3 streaming
 │       └── kafka_producer.py      # Kafka output producer — aiokafka
 ├── docs/
-│   └── implementation_plan.md     # This file
+│   ├── implementation_plan.md     # This file
+│   ├── sequence_diagram.mermaid   # Mermaid-formatted sequential flow
+│   ├── er_diagram.mermaid         # Mermaid-formatted state machine schema
+│   ├── decoupled_worker_design.md # Multi-pod scaling architectural design document
+│   └── docker_compose_design.md   # Local development compose and mock design document
+├── mocks/                         # FastAPI mock APIs for offline local testing
+│   ├── docsys/                    # Mock download service
+│   ├── docsysarc/                 # Mock archival service
+│   ├── gpt/                       # Mock OCR & summary service
+│   └── oidc/                      # Mock M2M authentication provider
 ├── Dockerfile                     # Non-root, OpenShift-ready
+├── docker-compose.yml             # Local docker compose orchestration stack
 ├── requirements.txt
 ├── .env.example
+├── .env.compose                   # Environment configuration for docker compose
 └── README.md
 ```
 

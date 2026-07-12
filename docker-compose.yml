@@ -1,0 +1,187 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: ocr-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ocruser
+      POSTGRES_PASSWORD: ocrpass
+      POSTGRES_DB: ocrdb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ocruser -d ocrdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: ocr-kafka
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
+      KAFKA_LISTENERS: 'PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:29093,PLAINTEXT_HOST://0.0.0.0:29092'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka-setup:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: ocr-kafka-setup
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      echo 'Creating Kafka topics...';
+      kafka-topics --create --if-not-exists --bootstrap-server kafka:9092 --partitions 1 --replication-factor 1 --topic doc-processing-requests;
+      kafka-topics --create --if-not-exists --bootstrap-server kafka:9092 --partitions 1 --replication-factor 1 --topic doc-processing-results;
+      echo 'Kafka topics created successfully:';
+      kafka-topics --list --bootstrap-server kafka:9092;
+      "
+
+  minio:
+    image: minio/minio:latest
+    container_name: ocr-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio-setup:
+    image: minio/mc:latest
+    container_name: ocr-minio-setup
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set localminio http://minio:9000 minioadmin minioadmin;
+      mc mb localminio/ocr-documents || true;
+      echo 'MinIO bucket ocr-documents created.';
+      "
+
+  mock-oidc:
+    build:
+      context: ./mocks/oidc
+    container_name: ocr-mock-oidc
+    ports:
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/openapi.json')"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mock-docsys:
+    build:
+      context: ./mocks/docsys
+    container_name: ocr-mock-docsys
+    ports:
+      - "8082:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/openapi.json')"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mock-gpt:
+    build:
+      context: ./mocks/gpt
+    container_name: ocr-mock-gpt
+    ports:
+      - "8083:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/openapi.json')"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mock-docsysarc:
+    build:
+      context: ./mocks/docsysarc
+    container_name: ocr-mock-docsysarc
+    ports:
+      - "8084:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/openapi.json')"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ocr-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      mock-oidc:
+        condition: service_healthy
+      mock-docsys:
+        condition: service_healthy
+      mock-gpt:
+        condition: service_healthy
+      mock-docsysarc:
+        condition: service_healthy
+    env_file:
+      - .env.compose
+    restart: on-failure
+
+  kafdrop:
+    image: obsidiandynamics/kafdrop:latest
+    container_name: ocr-kafdrop
+    ports:
+      - "8085:9000"
+    environment:
+      KAFKA_BROKERCONNECT: "kafka:9092"
+      JVM_OPTS: "-Xms32M -Xmx64M"
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  db-adminer:
+    image: adminer:latest
+    container_name: ocr-db-adminer
+    ports:
+      - "8086:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  minio_data:

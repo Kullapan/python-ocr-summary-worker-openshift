@@ -58,9 +58,25 @@ class DatabaseManager:
         # Updated schema: removed s3_raw_key, s3_ocr_key, s3_report_key columns.
         # Added filename column to track the raw document filename for S3 extension parsing.
         # Added openid_tokens table to store cached M2M tokens securely for all pods.
+        alter_ddl = """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 
+                FROM information_schema.columns 
+                WHERE table_name = 'job_states' 
+                  AND column_name = 'id' 
+                  AND data_type = 'uuid'
+            ) THEN
+                ALTER TABLE job_states ALTER COLUMN id TYPE VARCHAR(255);
+                ALTER TABLE job_states ALTER COLUMN id DROP DEFAULT;
+            END IF;
+        END $$;
+        """
+
         ddl = """
         CREATE TABLE IF NOT EXISTS job_states (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            id VARCHAR(255) PRIMARY KEY,
             docid VARCHAR(255) NOT NULL,
             fileid VARCHAR(255) NOT NULL,
             state VARCHAR(50) NOT NULL DEFAULT 'RECEIVED',
@@ -84,33 +100,35 @@ class DatabaseManager:
         """
 
         async with self.pool.acquire() as conn:
+            await conn.execute(alter_ddl)
             await conn.execute(ddl)
 
         logger.info("database.schema_initialised")
 
     # ── CRUD ────────────────────────────────────────────────────────
 
-    async def create_job(self, docid: str, fileid: str) -> str:
-        """Insert a new job row and return its UUID as a string.
+    async def create_job(self, job_id: str, docid: str, fileid: str) -> str:
+        """Insert a new job row and return its ID as a string.
 
         Args:
+            job_id: The client-provided job/correlation identifier.
             docid: The document identifier.
             fileid: The file identifier within the document.
 
         Returns:
-            The generated UUID of the new job row (as a string).
+            The ID of the new job row (as a string).
         """
         if self.pool is None:
             raise RuntimeError("Database pool is not initialised. Call connect() first.")
 
         query = """
-        INSERT INTO job_states (docid, fileid)
-        VALUES ($1, $2)
+        INSERT INTO job_states (id, docid, fileid)
+        VALUES ($1, $2, $3)
         RETURNING id;
         """
 
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(query, docid, fileid)
+            row = await conn.fetchrow(query, job_id, docid, fileid)
 
         job_id = str(row["id"])  # type: ignore[index]
         logger.info("database.job_created", job_id=job_id, docid=docid, fileid=fileid)
@@ -198,7 +216,7 @@ class DatabaseManager:
             idx += 1
 
         set_clause = ", ".join(set_parts)
-        query = f"UPDATE job_states SET {set_clause} WHERE id = $1::uuid;"
+        query = f"UPDATE job_states SET {set_clause} WHERE id = $1;"
 
         async with self.pool.acquire() as conn:
             await conn.execute(query, *params)
@@ -222,7 +240,7 @@ class DatabaseManager:
         if self.pool is None:
             raise RuntimeError("Database pool is not initialised. Call connect() first.")
 
-        query = "SELECT * FROM job_states WHERE id = $1::uuid;"
+        query = "SELECT * FROM job_states WHERE id = $1;"
 
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(query, job_id)
