@@ -58,3 +58,18 @@ Unlike traditional sequential Kafka consumers, this pipeline decouples message i
   * Running as non-root user `1001` (configured in `Dockerfile` and `openshift/deployment.yaml`).
   * Drops all Linux capabilities.
   * Root filesystem is read-only (except `/tmp/ocr-worker` which is mounted/allocated for scratch file streaming).
+
+---
+
+## 5. OIDC M2M Token Caching Rules
+
+To authenticate calls to DOCSYS, Secure GPT, and DOCSYSARC APIs without hitting identity provider rate limits, we cache OIDC access tokens in the database.
+
+* **Cache Schema**: The `openid_tokens` table stores the cached token and its expiration:
+  `service_name` (PK) | `access_token` | `expires_at` (TIMESTAMPTZ) | `updated_at` (TIMESTAMPTZ).
+* **Two-Tier Cache Access (Multi-Pod Safe)**:
+  1. **Fast-Path (Lockless)**: Always check the DB cache first without a transaction or lock. If a valid, non-expired token is found (with a 30-second expiry buffer), return it immediately.
+  2. **Row Lock-on-Refresh**: If the token is missing or expired, acquire an exclusive row lock (`SELECT ... FOR UPDATE` inside a transaction on `openid_tokens`). Once the lock is acquired, perform a **post-lock check** on expiration to see if another pod refreshed it while this pod was waiting. Only execute the external OIDC client credentials request if it is still expired.
+* **Timezone Safety**: PostgreSQL stores and returns `TIMESTAMPTZ` with timezone offsets. Always compare expiration using UTC timezone-aware datetime objects: `datetime.now(timezone.utc)`.
+* **Retries Context**: GPT service tokens must be retrieved *inside* the request retry loops. If a long-running GPT request retries and the token expires during the retry attempts, it must resolve a new valid token.
+
