@@ -26,6 +26,7 @@ graph LR
 For more detailed diagrams, refer to the documentation:
 * [Sequence Diagram](docs/sequence_diagram.mermaid)
 * [Entity-Relationship (ER) Diagram](docs/er_diagram.mermaid)
+* [Local Docker Compose Design](docs/docker_compose_design.md)
 
 ---
 
@@ -55,7 +56,13 @@ python-ocr-summary-worker-openshift/
 │   ├── implementation_plan.md     # Baseline implementation specification
 │   ├── sequence_diagram.mermaid   # Mermaid-formatted sequential flow
 │   ├── er_diagram.mermaid         # Mermaid-formatted state machine schema
-│   └── decoupled_worker_design.md # Multi-pod scaling architectural design document
+│   ├── decoupled_worker_design.md # Multi-pod scaling architectural design document
+│   └── docker_compose_design.md   # Local development compose and mock design document
+├── mocks/                         # FastAPI mock APIs for offline local testing
+│   ├── docsys/                    # Mock download service
+│   ├── docsysarc/                 # Mock archival service
+│   ├── gpt/                       # Mock OCR & summary service
+│   └── oidc/                      # Mock M2M authentication provider
 ├── openshift/
 │   ├── buildconfig.yaml           # OpenShift build pipeline configuration
 │   ├── imagestream.yaml           # Local container image tracking catalog
@@ -342,6 +349,18 @@ graph TD
 
 ## Development Setup
 
+### Local Docker Compose Environment (Recommended)
+
+To run the worker offline with fully containerized mocks of all dependencies (PostgreSQL, Kafka, MinIO, OIDC, DOCSYS, GPT, DOCSYSARC, Kafdrop, and Adminer), run:
+
+```bash
+# Start all services, mocks, dashboards, and the worker
+docker compose --env-file .env.compose up --build
+```
+
+Refer to the [Local Docker Compose Design Document](docs/docker_compose_design.md) for verification commands, accessing the web dashboards (Kafdrop, Adminer, MinIO console), and swapping mocks with real staging services.
+
+### Manual Local Run
 ```bash
 # Clone the repository
 git clone <repo-url>
@@ -362,6 +381,65 @@ cp .env.example .env
 # Run the worker
 python -m app
 ```
+
+---
+
+## Local Mock Service Testing
+
+To verify the end-to-end event-driven pipeline locally, you can execute a full offline simulation utilizing the containerized mock services.
+
+### Step 1: Start the Docker Compose Environment
+Bring up the database, broker, object storage, API mock instances, and the worker container:
+```bash
+docker compose --env-file .env.compose up --build
+```
+
+### Step 2: Trigger a Test Document Job
+Once the services are active, run the following command in a new terminal to publish a JSON test request to the Kafka ingress topic (`doc-processing-requests`):
+```bash
+docker exec -i ocr-kafka kafka-console-producer --bootstrap-server localhost:9092 --topic doc-processing-requests <<< '{"docid": "test-doc-123", "fileid": "test-file-456"}'
+```
+
+### Step 3: Monitor Execution Logs
+You can view the sequential state machine changes (e.g. `RECEIVED`, `DOWNLOADED`, `UPLOADED_S3`, `OCR_COMPLETED`, `SUMMARY_COMPLETED`, `ARCHIVED`, `SUCCESS`) directly in your terminal console logs. To view only the worker logs, execute:
+```bash
+docker compose logs worker
+```
+
+### Step 4: Verify Completion Events
+Consume from the Kafka output results topic (`doc-processing-results`) to assert that the worker successfully published the completion status:
+```bash
+docker exec -it ocr-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic doc-processing-results --from-beginning --max-messages 1
+```
+
+---
+
+### Visual Auditing via Web UIs
+
+To visually audit and verify data transformations, open the following local web dashboards in your browser:
+
+#### 1. Kafdrop (Kafka Web UI) — [http://localhost:8085](http://localhost:8085)
+* **Verify Topics**: Browse topic configurations, view active consumer groups (`ocr-summary-worker`), and check consumer lag.
+* **Browse Messages**: Select a topic (e.g. `doc-processing-requests`), click **"View Messages"** in the top-right corner, choose partition `0`, and click **"View Messages"** to inspect payload structures.
+
+#### 2. Adminer (PostgreSQL Database UI) — [http://localhost:8086](http://localhost:8086)
+* **Login Credentials**:
+  - **System**: `PostgreSQL`
+  - **Server**: `postgres`
+  - **Username**: `ocruser`
+  - **Password**: `ocrpass`
+  - **Database**: `ocrdb`
+* **Audit States**: Click the **`job_states`** table in the sidebar and choose **"Select data"** to view all persistent job records, error stacktraces, and pod lease parameters.
+* **Audit Tokens**: Click the **`openid_tokens`** table to view cached M2M access tokens for DOCSYS and GPT.
+
+#### 3. MinIO Console (S3 Browser UI) — [http://localhost:9001](http://localhost:9001)
+* **Login Credentials**:
+  - **Username**: `minioadmin`
+  - **Password**: `minioadmin`
+* **Browse Storage Artifacts**: Open **"Object Browser"** in the left sidebar, click the **`ocr-documents`** bucket, and navigate through the `jobs/<job_uuid>/` folder:
+  - `raw.txt` (or original extension): The document downloaded from docsys.
+  - `ocr.txt`: The text extracted from the document by the mock GPT OCR API.
+  - `report.txt`: The summary report text generated by the mock GPT completions API.
 
 ---
 
