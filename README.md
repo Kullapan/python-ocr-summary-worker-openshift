@@ -83,21 +83,21 @@ python-ocr-summary-worker-openshift/
 
 ## Suggested S3 Object Layout
 
-To ensure clean isolation, auditing, and scalability, the object storage is organized systematically by `job_id` (UUID format). The suggested S3 folder layout structure in the bucket is:
+To ensure clean isolation, auditing, and scalability, the object storage is organized systematically by the client-provided `job_id` (any string format). The S3 folder layout structure in the bucket is:
 
 ```
 s3://<S3_BUCKET_NAME>/
   └── jobs/
-      └── <job_uuid>/
+      └── <job_id>/
           ├── raw.<ext>           # Original file uploaded during Step 3
           ├── ocr.txt             # Raw plain text output from Step 4 (GPT OCR)
           └── report.txt          # Final summarized report text from Step 5 (GPT Summary)
 ```
 
 ### Layout Properties
-* **UUID Partitioning**: Nesting objects under the job's unique UUID (`jobs/<job_uuid>/...`) avoids object name collisions and partition hotspots in S3.
+* **Tenant Isolation Partitioning**: Nesting objects under the job's unique client-generated correlation ID (`jobs/<job_id>/...`) avoids object name collisions, partition hotspots in S3, and guarantees transaction isolation.
 * **Format Preservation**: The raw document retains its original extension (`.pdf`, `.docx`, `.png`, etc.), while text artifacts are saved as `.txt`.
-* **Deterministic S3 Keys**: S3 keys are constructed dynamically using the `job_id` (e.g. `jobs/{job_id}/ocr.txt`). The database only stores the original `filename` (in the `filename` column) to identify the file extension for the raw S3 object.
+* **Deterministic S3 Keys**: S3 keys are constructed dynamically using the client-provided `job_id` (e.g. `jobs/{job_id}/ocr.txt`). The database only stores the original `filename` (in the `filename` column) to identify the file extension for the raw S3 object.
 
 ---
 
@@ -245,7 +245,7 @@ The worker processes each document through a **7-step sequential pipeline**:
 
 | Step | Action | State After |
 |---:|---|---|
-| 1 | **Consume** Kafka message (`docid`, `fileid`) | `RECEIVED` |
+| 1 | **Consume** Kafka message (`job_id`, `docid`, `fileid`) | `RECEIVED` |
 | 2 | **Download** document from DOCSYS API (streamed) | `DOWNLOADED` |
 | 3 | **Upload** raw file to S3 via VPC Endpoint | `UPLOADED_S3` |
 | 4 | **OCR** — send document to Secure GPT, save text to S3 | `OCR_COMPLETED` |
@@ -253,9 +253,9 @@ The worker processes each document through a **7-step sequential pipeline**:
 | 6 | **Archive** — upload report to DOCSYSARC | `ARCHIVED` |
 | 7 | **Publish** completion status to Kafka output topic | `SUCCESS` |
 
-Each step updates the PostgreSQL state machine. If any step fails, the state is set to `FAILED` and worker lock columns are cleared to release the claim. 
+Each step updates the PostgreSQL state machine. If any step fails, the worker lock columns are cleared to release the claim. 
 
-Instead of executing jobs synchronously inside the main Kafka loop, the consumer immediately logs the job as `RECEIVED` and commits the offset. A background worker pool on each pod replica polls PostgreSQL and claims pending or failed tasks utilizing an atomic `FOR UPDATE SKIP LOCKED` query (to prevent concurrent duplicate execution across scaled pods). Claims are protected by a 15-minute lease; if a pod crashes, the lease expires, allowing other pods to automatically reclaim and resume the pipeline from the last known database state (idempotent recovery).
+Instead of executing jobs synchronously inside the main Kafka loop, the consumer validates the incoming message against the Pydantic schema, registers the client-provided `job_id` as the primary key in PostgreSQL (`state = 'RECEIVED'`), and immediately commits the offset. A background worker pool on each pod replica polls PostgreSQL and claims pending or failed tasks utilizing an atomic `FOR UPDATE SKIP LOCKED` query (to prevent concurrent duplicate execution across scaled pods). Claims are protected by a 15-minute lease; if a pod crashes, the lease expires, allowing other pods to automatically reclaim and resume the pipeline from the last known database state (idempotent recovery).
 
 ---
 
@@ -395,9 +395,9 @@ docker compose --env-file .env.compose up --build
 ```
 
 ### Step 2: Trigger a Test Document Job
-Once the services are active, run the following command in a new terminal to publish a JSON test request to the Kafka ingress topic (`doc-processing-requests`):
+Once the services are active, run the following command in a new terminal to publish a JSON test request containing the client-generated `job_id` correlation ID to the Kafka ingress topic (`doc-processing-requests`):
 ```bash
-docker exec -i ocr-kafka kafka-console-producer --bootstrap-server localhost:9092 --topic doc-processing-requests <<< '{"docid": "test-doc-123", "fileid": "test-file-456"}'
+docker exec -i ocr-kafka kafka-console-producer --bootstrap-server localhost:9092 --topic doc-processing-requests <<< '{"job_id": "client-custom-corr-100abc", "docid": "test-doc-123", "fileid": "test-file-456"}'
 ```
 
 ### Step 3: Monitor Execution Logs
