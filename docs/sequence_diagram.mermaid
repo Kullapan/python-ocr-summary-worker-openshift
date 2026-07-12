@@ -15,11 +15,11 @@ sequenceDiagram
     participant K_OUT as Kafka Output Topic (Results)
 
     %% Phase 1: Ingress Dispatching
-    Client->>K_IN: Publish Request message (docid, fileid)
-    K_IN->>W_Cons: Consume message (docid, fileid)
-    W_Cons->>DB: Check if job exists (get_job_by_document)
+    Client->>K_IN: Publish Request message (job_id, docid, fileid)
+    K_IN->>W_Cons: Consume message (job_id, docid, fileid)
+    W_Cons->>DB: Check if job exists by job_id (get_job)
     alt Job does not exist
-        W_Cons->>DB: INSERT INTO job_states (docid, fileid, state='RECEIVED')
+        W_Cons->>DB: INSERT INTO job_states (id=job_id, docid, fileid, state='RECEIVED')
     end
     W_Cons->>K_IN: Commit Kafka offset immediately (prevents lag/timeout)
 
@@ -30,8 +30,8 @@ sequenceDiagram
     end
 
     %% Phase 3: Pipeline Execution
-    W_Claim->>P: process(docid, fileid)
-    P->>DB: resolve_job() -> check state & fetch filename (supports recovery)
+    W_Claim->>P: process(job_id, docid, fileid)
+    P->>DB: resolve_job() -> get_job(job_id) -> check state & fetch filename (supports recovery)
     
     alt state < DOWNLOADED
         P->>OIDC: get_token('docsys')
